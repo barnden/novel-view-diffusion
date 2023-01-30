@@ -310,8 +310,7 @@ class XUNet(nn.Module):
             self.encoder.append(blocks)
 
         # Bottleneck (ch * ch_mult[-1], 8, 8)
-        features = ch * ch_mult[-1]
-        self.bottleneck = XUNetBlock(features, features, use_attn=True, dropout=dropout)
+        self.bottleneck = XUNetBlock(ch * ch_mult[-1], ch * ch_mult[-2], use_attn=True, dropout=dropout)
 
         # Decoder (ch * ch_mult[-1], 8, 8) -> (ch, H, W)
         self.decoder = []
@@ -322,13 +321,20 @@ class XUNet(nn.Module):
             features = ch * level
 
             for _ in range(num_res_blocks + 1):
-                features_in = features if i == len(ch_mult) - 1 else 2 * features
                 features_out = features if not i else ch * ch_mult[i - 1]
-                blocks.append(XUNetBlock(features_in, features_out, use_attn, 4, dropout))
+                blocks.append(
+                    XUNetBlock(2 * features, features_out, use_attn, 4, dropout)
+                )
 
-            blocks.append(ResnetBlock(features_out, features_out, dropout, resample="up"))
+            blocks.append(
+                ResnetBlock(features_out, features_out, dropout, resample="up")
+            )
+
+            self.decoder.append(blocks)
 
         # Output (ch, H, W) -> (C, H, W)
+        self.conv2 = nn.Conv3d(ch, 3, kernel_size=(1, 3, 3), padding="same")
+        nn.init.trunc_normal_(self.conv2.weight, mean=0.0, std=0.0)
 
     def forward(self, batch):
         # TODO: Classifier-free guidance
@@ -347,15 +353,20 @@ class XUNet(nn.Module):
         h = torch.stack([batch["x"], batch["z"]], axis=1)
         h = self.conv1(h)
 
-        hs = [h]
-        for i in self.ch_mult:
+        features = [h]
+        for i, layer in enumerate(self.encoder):
             emb = logsnr_emb[..., None, None, :] + pose_embs[i]
 
-            for j in range(self.num_res_blocks):
-                use_attn = h.shape[2] in self.attn_resolutions
+            for block in layer:
+                h = block(h, emb)
+                features.append(h)
 
+        emb = logsnr_emb[..., None, None, :] + pose_embs[-1]
+        h = self.bottleneck(h)
 
-# logsnr = -18
-# logsnr = 2. * torch.arctan(torch.exp(torch.Tensor([-logsnr / 2.]))) / torch.pi
-# emb = posenc_ddpm(logsnr, 32)
-# print(emb.shape, emb)
+        for i, layer in enumerate(self.decoder):
+            emb = logsnr_emb[..., None, None, :] + pose_embs[-(i + 1)]
+            for block in layer:
+                feature = features.pop()
+                h = torch.concat([h, feature], axis=1)
+                h = block(h, emb)
