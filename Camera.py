@@ -1,13 +1,16 @@
 import torch
 import torch.nn.functional as F
 
-class Camera():
+
+class Camera:
     def __init__(self, H, W, K, R, t):
         self.Kinv = torch.inverse(K)
+        self.padding = 6 - R.ndim
+
         self.H = H
         self.W = W
-        self.R = R
-        self.t = t
+        self.R = R.reshape(R.shape[:-2] + (1,) * self.padding + R.shape[-2:])
+        self.t = t.reshape(t.shape[:-1] + (1,) * self.padding + t.shape[-1:])
 
     def centers(self):
         h, w = torch.meshgrid(torch.arange(self.H), torch.arange(self.W), indexing="xy")
@@ -15,19 +18,17 @@ class Camera():
         points = torch.stack([h, w], axis=-1)
         points = torch.asarray(points) + 0.5
 
-        points = torch.concat([
-            points,
-            torch.ones_like(h)[..., None]
-        ], dim=-1)
+        points = torch.concat([points, torch.ones_like(h)[..., None]], dim=-1)
 
         return points
 
     def rays(self):
-        target = self.centers().unsqueeze(-1)
+        target = self.centers()
+        target = target.reshape((1,) * self.padding + target.shape + (1,))
         dirs = self.R @ (self.Kinv @ target)
         dirs = dirs.squeeze()
         dirs = F.normalize(dirs, dim=-1)
 
-        pos = torch.stack(self.H * self.W * (self.t, ), dim=-1).reshape(self.H, self.W, 3)
+        pos = self.t.repeat(1, 1, self.H, self.W, 1)
 
         return (pos, dirs)
