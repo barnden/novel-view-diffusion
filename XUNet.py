@@ -19,7 +19,7 @@ class GroupNorm(nn.Module):
         super().__init__()
         self.norm = nn.GroupNorm(num_groups, num_channels)
 
-    def __forward__(self, h):
+    def forward(self, h):
         B, C, D, H, W = h.shape
 
         h = h.reshape(B * D, C, 1, H, W).squeeze()
@@ -35,6 +35,7 @@ class FiLM(nn.Module):
 
         self.silu = nn.SiLU()
         self.dense = nn.Linear(features, 2 * features)
+        self.features = features
 
     def forward(self, x, emb):
         emb = self.silu(emb)
@@ -47,7 +48,7 @@ class FiLM(nn.Module):
 
 
 class ResnetBlock(nn.Module):
-    def __init__(self, dim_in, dim_out, dropout, resample):
+    def __init__(self, dim_in, dim_out, dropout, resample=None):
         super().__init__()
 
         self.norm1 = GroupNorm(num_channels=dim_in)
@@ -72,7 +73,7 @@ class ResnetBlock(nn.Module):
         )
 
         # From Watson et al.'s out_init_scale(), they use truncated normal with mean=0 and std=0
-        nn.init.trunc_normal_(self.conv2.weight, mean=0.0, std=0.0)
+        nn.init.trunc_normal_(self.conv2.weight, mean=0.0, std=1.0)
 
     def forward(self, h_in, emb):
         C = h_in.shape[1]
@@ -112,7 +113,7 @@ class AttnBlock(nn.Module):
         self.attn2 = nn.MultiheadAttention(features, attn_heads)
 
         self.dense = nn.Linear(in_features=features, out_features=features)
-        nn.init.trunc_normal_(self.dense.weight, mean=0.0, std=0.0)
+        nn.init.trunc_normal_(self.dense.weight, mean=0.0, std=1.0)
 
     def forward(self, h_in):
         B, C, _, H, W = h_in.shape
@@ -172,38 +173,43 @@ class ConditioningProcessor(nn.Module):
     ):
         super().__init__()
 
+        magic = 16 * 9 # (15 - 0 + 1) (8 - 0 + 1) -> 16 * 9 (last dimension of pose_emb)
+        magic_root = math.sqrt(magic)
+
+        self.emb_ch = emb_ch
+
         self.linear = nn.Sequential(
-            nn.Linear(144, emb_ch), nn.SiLU(), nn.Linear(emb_ch, emb_ch)
+            nn.Linear(emb_ch, emb_ch), nn.SiLU(), nn.Linear(emb_ch, emb_ch)
         )
 
         self.convs = [
             nn.Conv3d(
-                in_channels=1,
-                out_channels=1,
+                in_channels=magic,
+                out_channels=emb_ch,
                 kernel_size=(1, 3, 3),
                 stride=(1, 2**i, 2**i),
                 padding=1,
             )
             for i in range(num_resolutions)
         ]
+
         # fmt: off
-        magic = 16 * 9 # (15 - 0 + 1) (8 - 0 + 1) -> 16 * 9 (last dimension of pose_emb)
-        magic_root = math.sqrt(magic)
         # Learnable positional embeddings
         self.use_pos_emb = use_pos_emb
         if use_pos_emb:
-            self.pos_emb = torch.nn.Parameter(torch.empty(H, W, magic).normal_(std=1 / magic_root))
+            self.pos_emb = torch.nn.Parameter(torch.empty(H, W, magic).normal_(std=1 / magic_root)[None, None])
             self.pos_emb.requires_grad = True
 
         # Binary embedding to allow the model to distinguish frames
         self.use_ref_pose_emb = use_ref_pose_emb
         if use_ref_pose_emb:
-            self.first_emb = torch.nn.Parameter(torch.empty(magic,).normal_(std=1 / magic_root))
+            self.first_emb = torch.nn.Parameter(torch.empty(magic,).normal_(std=1 / magic_root)[None, None, None, None])
             self.first_emb.requires_grad = True
 
-            self.ref_pose_emb_other = torch.nn.Parameter(torch.empty(magic,).normal_(std=1 / magic_root))
-            self.ref_pose_emb_other.requires_grad = True
+            self.other_emb = torch.nn.Parameter(torch.empty(magic,).normal_(std=1 / magic_root)[None, None, None, None])
+            self.other_emb.requires_grad = True
         # fmt: on
+
 
     def forward(self, batch, cond_mask=None):
         # TODO: Classifier-free guidance over poses (cond_mask)
@@ -215,6 +221,7 @@ class ConditioningProcessor(nn.Module):
         logsnr_emb = posenc_ddpm(logsnr, emb_ch=self.emb_ch, max_time=1.0)
         logsnr_emb = self.linear(logsnr_emb)
 
+
         pos, dir = Camera(H, W, batch["K"], batch["R"], batch["t"]).rays()
 
         pose_emb_pos = posenc_nerf(pos, min_deg=0, max_deg=15)
@@ -222,12 +229,14 @@ class ConditioningProcessor(nn.Module):
         pose_emb = torch.concat([pose_emb_pos, pose_emb_dir], axis=-1)
 
         if self.use_pos_emb:
-            pose_emb += self.pos_emb[None, None]
+            pose_emb += self.pos_emb
 
         if self.use_ref_pose_emb:
-            pose_emb += torch.concat([self.first_emb, self.other_emb])
+            pose_emb += torch.concat([self.first_emb, self.other_emb], dim=1)
 
+        pose_emb = pose_emb.permute(0, -1, 1, 2, 3)
         pose_embs = [conv(pose_emb) for conv in self.convs]
+        pose_embs = [emb.permute(0, 2, 3, 4, 1) for emb in pose_embs]
 
         return logsnr_emb, pose_embs
 
@@ -262,11 +271,12 @@ class XUNetLevel(nn.Module):
 class XUNet(nn.Module):
     def __init__(
         self,
+        dimensions=(128, 128),
         ch=256,
         ch_mult=(1, 2, 2, 4),
         emb_ch=1024,
         num_res_blocks=3,
-        attn_layers=(1, 2, 3),
+        attn_layers=(2, 3),
         attn_heads=4,
         dropout=0.1,
         use_pos_emb=True,
@@ -281,9 +291,10 @@ class XUNet(nn.Module):
         self.attn_layers = attn_layers
         self.attn_heads = attn_heads
         self.dropout = dropout
-        self.emb_ch = self.emb_ch
+        self.emb_ch = emb_ch
 
         self.processor = ConditioningProcessor(
+            *dimensions,
             emb_ch=emb_ch,
             num_resolutions=len(ch_mult),
             use_pos_emb=use_pos_emb,
@@ -327,14 +338,16 @@ class XUNet(nn.Module):
                 )
 
             blocks.append(
-                ResnetBlock(features_out, features_out, dropout, resample="up")
+                ResnetBlock(2 * features_out, features_out, dropout, resample="up")
             )
+
+            print(blocks)
 
             self.decoder.append(blocks)
 
         # Output (ch, H, W) -> (C, H, W)
         self.conv2 = nn.Conv3d(ch, 3, kernel_size=(1, 3, 3), padding="same")
-        nn.init.trunc_normal_(self.conv2.weight, mean=0.0, std=0.0)
+        nn.init.trunc_normal_(self.conv2.weight, mean=0.0, std=1.0)
 
     def forward(self, batch):
         # TODO: Classifier-free guidance
@@ -347,26 +360,29 @@ class XUNet(nn.Module):
             R: camera rotations     2 x (3, 3)
             K: camera intrinsic     (3, 3)
         """
-        B, C, H, W = batch["x"].shape
         logsnr_emb, pose_embs = self.processor(batch)
 
-        h = torch.stack([batch["x"], batch["z"]], axis=1)
+        h = torch.stack([batch["x"], batch["z"]], axis=2)
         h = self.conv1(h)
 
         features = [h]
         for i, layer in enumerate(self.encoder):
-            emb = logsnr_emb[..., None, None, :] + pose_embs[i]
+            emb = logsnr_emb[..., None, None, None, :] + pose_embs[i]
+
+            print(f"layer {i} h={h.shape} emb={emb.shape}")
 
             for block in layer:
                 h = block(h, emb)
                 features.append(h)
 
-        emb = logsnr_emb[..., None, None, :] + pose_embs[-1]
+        emb = logsnr_emb[..., None, None, None, :] + pose_embs[-1]
         h = self.bottleneck(h)
 
         for i, layer in enumerate(self.decoder):
-            emb = logsnr_emb[..., None, None, :] + pose_embs[-(i + 1)]
+            emb = logsnr_emb[..., None, None, None, :] + pose_embs[-(i + 1)]
             for block in layer:
                 feature = features.pop()
                 h = torch.concat([h, feature], axis=1)
                 h = block(h, emb)
+
+        return h
