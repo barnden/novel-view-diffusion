@@ -196,7 +196,7 @@ class ConditioningProcessor(nn.Module):
                 stride=(1, 2**i, 2**i),
                 padding=(0, 1, 1),
             )
-            for i in range(num_resolutions)
+            for i in range(num_resolutions + 1)
         ]
 
         # fmt: off
@@ -304,7 +304,12 @@ class XUNet(nn.Module):
             self.encoder.append((blocks, resample))
 
         # Bottleneck (ch * ch_mult[-1], 8, 8)
-        self.bottleneck = XUNetBlock(ch * ch_mult[-1], ch * ch_mult[-1], emb_ch, use_attn=True, attn_dim=np.prod(block_dim), dropout=dropout)
+        features = ch * ch_mult[-1]
+        block_dim //= 2
+        self.down1 = ResnetBlock(features, features, emb_ch, dropout, resample="down")
+        self.bottleneck = XUNetBlock(features, features, emb_ch, use_attn=True, attn_dim=np.prod(block_dim), dropout=dropout)
+        self.up1 = ResnetBlock(features, features, emb_ch, dropout, resample="up")
+        block_dim *= 2
 
         # Decoder (ch * ch_mult[-1], 8, 8) -> (ch, H, W)
         self.decoder = []
@@ -357,11 +362,13 @@ class XUNet(nn.Module):
             if resample is not None:
                 h = resample(h, emb)
 
+        h = self.down1(h, emb)
         emb = logsnr_emb[..., None, None, :] + pose_embs[-1]
         h = self.bottleneck(h, emb)
+        h = self.up1(h, emb)
 
         for i, (blocks, resample) in enumerate(self.decoder):
-            emb = logsnr_emb[..., None, None, :] + pose_embs[-(i + 1)]
+            emb = logsnr_emb[..., None, None, :] + pose_embs[-(i + 2)]
 
             for block in blocks:
                 h = torch.concat([h, hs.pop()], axis=1)
