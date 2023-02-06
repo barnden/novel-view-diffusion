@@ -30,17 +30,20 @@ class GroupNorm(nn.Module):
 
 
 class FiLM(nn.Module):
-    def __init__(self, features):
+    def __init__(self, features, emb_ch):
         super().__init__()
 
         self.silu = nn.SiLU()
-        self.dense = nn.Linear(features, 2 * features)
-        self.features = features
+        self.dense = nn.Linear(emb_ch, 2 * features)
 
     def forward(self, x, emb):
+        C = x.shape[1]
         emb = self.silu(emb)
         emb = self.dense(emb)
-        scale, shift = torch.split(emb, 2, dim=-1)
+
+        emb = emb.permute(0, -1, 1, 2, 3)
+
+        scale, shift = torch.split(emb, C, dim=1)
 
         x = x * (1.0 + scale) + shift
 
@@ -48,13 +51,13 @@ class FiLM(nn.Module):
 
 
 class ResnetBlock(nn.Module):
-    def __init__(self, dim_in, dim_out, dropout, resample=None):
+    def __init__(self, dim_in, dim_out, emb_ch, dropout, resample=None):
         super().__init__()
 
         self.norm1 = GroupNorm(num_channels=dim_in)
         self.conv1 = nn.Conv3d(dim_in, dim_out, kernel_size=(1, 3, 3), padding="same")
         self.norm2 = GroupNorm(num_channels=dim_out)
-        self.film = FiLM(dim_out)
+        self.film = FiLM(dim_out, emb_ch)
         self.silu = nn.SiLU()
         self.dropout = nn.Dropout3d(p=dropout)
         self.conv2 = nn.Conv3d(dim_out, dim_out, kernel_size=(1, 3, 3), padding="same")
@@ -103,14 +106,14 @@ class ResnetBlock(nn.Module):
 
 
 class AttnBlock(nn.Module):
-    def __init__(self, features, attn_type=None, attn_heads=4):
+    def __init__(self, features, attn_dims, attn_type=None, attn_heads=4):
         super().__init__()
 
         self.norm = GroupNorm(num_channels=features)
         self.attn_type = attn_type
 
-        self.attn1 = nn.MultiheadAttention(features, attn_heads)
-        self.attn2 = nn.MultiheadAttention(features, attn_heads)
+        self.attn1 = nn.MultiheadAttention(attn_dims, attn_heads)
+        self.attn2 = nn.MultiheadAttention(attn_dims, attn_heads)
 
         self.dense = nn.Linear(in_features=features, out_features=features)
         nn.init.trunc_normal_(self.dense.weight, mean=0.0, std=1.0)
@@ -123,15 +126,16 @@ class AttnBlock(nn.Module):
         h1 = h[:, :, 1].reshape(B, C, H * W)
 
         if self.attn_type == "self":
-            h0 = self.attn1(h0, h0, h0)
-            h1 = self.attn2(h1, h1, h1)
+            h0, _ = self.attn1(h0, h0, h0, need_weights=False)
+            h1, _ = self.attn2(h1, h1, h1, need_weights=False)
         elif self.attn_type == "cross":
-            h0 = self.attn1(h0, h1, h1)
-            h1 = self.attn2(h1, h0, h0)
+            h0, _ = self.attn1(h0, h1, h1, need_weights=False)
+            h1, _ = self.attn2(h1, h0, h0, need_weights=False)
         else:
             raise NotImplementedError(self.attn_type)
 
         h = torch.stack((h0, h1), axis=2)
+        h = h.reshape(B, C, -1, H, W)
 
         h = h.permute(0, 2, 3, 4, 1)
         h = self.dense(h)
@@ -141,15 +145,15 @@ class AttnBlock(nn.Module):
 
 
 class XUNetBlock(nn.Module):
-    def __init__(self, dim_in, dim_out, use_attn=False, attn_heads=4, dropout=0):
+    def __init__(self, dim_in, dim_out, emb_ch, use_attn=False, attn_dim=None, attn_heads=4, dropout=0):
         super().__init__()
 
         self.use_attn = use_attn
-        self.res = ResnetBlock(dim_in, dim_out, dropout)
+        self.res = ResnetBlock(dim_in, dim_out, emb_ch, dropout)
 
         if use_attn:
-            self.attn_self = AttnBlock(dim_in, "self", attn_heads)
-            self.attn_cross = AttnBlock(dim_in, "cross", attn_heads)
+            self.attn_self = AttnBlock(dim_out, attn_dim, "self", attn_heads)
+            self.attn_cross = AttnBlock(dim_out, attn_dim, "cross", attn_heads)
 
     def forward(self, x, emb):
         h = self.res(x, emb)
@@ -188,7 +192,7 @@ class ConditioningProcessor(nn.Module):
                 out_channels=emb_ch,
                 kernel_size=(1, 3, 3),
                 stride=(1, 2**i, 2**i),
-                padding=1,
+                padding=(0, 1, 1),
             )
             for i in range(num_resolutions)
         ]
@@ -241,33 +245,6 @@ class ConditioningProcessor(nn.Module):
         return logsnr_emb, pose_embs
 
 
-class XUNetLevel(nn.Module):
-    def __init__(
-        self, dim_in, dim_out, num_blocks=3, dropout=0, use_attn=True, attn_heads=4
-    ):
-        super().__init__()
-
-        blocks = []
-
-        for i in range(num_blocks):
-            blocks.append(
-                XUNetBlock(
-                    dim_in=dim_in if i == 0 else dim_out,
-                    dim_out=dim_out,
-                    use_attn=use_attn,
-                    attn_heads=attn_heads,
-                    dropout=dropout,
-                )
-            )
-
-        self.level = nn.Sequential(*blocks)
-
-    def forward(self, h, emb):
-        h = self.level(h, emb)
-
-        return h
-
-
 class XUNet(nn.Module):
     def __init__(
         self,
@@ -306,6 +283,7 @@ class XUNet(nn.Module):
 
         # Encoder (ch, H, W) -> (ch * ch_mult[-1], 8, 8)
         self.encoder = []
+        block_dim = np.array(dimensions)
         for i, level in enumerate(ch_mult):
             blocks = []
 
@@ -314,14 +292,16 @@ class XUNet(nn.Module):
 
             for j in range(num_res_blocks):
                 features_in = features if not i or j > 0 else ch * ch_mult[i - 1]
-                blocks.append(XUNetBlock(features_in, features, use_attn, 4, dropout))
+                blocks.append(XUNetBlock(features_in, features, emb_ch, use_attn, np.prod(block_dim), 4, dropout))
 
-            blocks.append(ResnetBlock(features, features, dropout, resample="down"))
+            if i != len(ch_mult) - 1:
+                blocks.append(ResnetBlock(features, features, emb_ch, dropout, resample="down"))
+                block_dim //= 2
 
             self.encoder.append(blocks)
 
         # Bottleneck (ch * ch_mult[-1], 8, 8)
-        self.bottleneck = XUNetBlock(ch * ch_mult[-1], ch * ch_mult[-2], use_attn=True, dropout=dropout)
+        self.bottleneck = XUNetBlock(ch * ch_mult[-1], ch * ch_mult[-1], emb_ch, use_attn=True, attn_dim=np.prod(block_dim), dropout=dropout)
 
         # Decoder (ch * ch_mult[-1], 8, 8) -> (ch, H, W)
         self.decoder = []
@@ -331,17 +311,13 @@ class XUNet(nn.Module):
             use_attn = i in attn_layers
             features = ch * level
 
-            for _ in range(num_res_blocks + 1):
-                features_out = features if not i else ch * ch_mult[i - 1]
-                blocks.append(
-                    XUNetBlock(2 * features, features_out, use_attn, 4, dropout)
-                )
+            for j in range(num_res_blocks):
+                features_out = features if not i or j != num_res_blocks - 1 else ch * ch_mult[i - 1]
+                blocks.append(XUNetBlock(2 * features, features_out, emb_ch, use_attn, np.prod(block_dim), 4, dropout))
 
-            blocks.append(
-                ResnetBlock(2 * features_out, features_out, dropout, resample="up")
-            )
-
-            print(blocks)
+            if i != len(ch_mult) - 1:
+                blocks.append(ResnetBlock(2 * features_out, features_out, emb_ch, dropout, resample="up"))
+                block_dim *= 2
 
             self.decoder.append(blocks)
 
@@ -367,19 +343,18 @@ class XUNet(nn.Module):
 
         features = [h]
         for i, layer in enumerate(self.encoder):
-            emb = logsnr_emb[..., None, None, None, :] + pose_embs[i]
+            emb = logsnr_emb[..., None, None, :] + pose_embs[i]
 
-            print(f"layer {i} h={h.shape} emb={emb.shape}")
+            print(f"enc {i} h={h.shape} emb={emb.shape}")
 
             for block in layer:
                 h = block(h, emb)
                 features.append(h)
 
-        emb = logsnr_emb[..., None, None, None, :] + pose_embs[-1]
-        h = self.bottleneck(h)
+        emb = logsnr_emb[..., None, None, :] + pose_embs[-1]
 
         for i, layer in enumerate(self.decoder):
-            emb = logsnr_emb[..., None, None, None, :] + pose_embs[-(i + 1)]
+            emb = logsnr_emb[..., None, None, :] + pose_embs[-(i + 1)]
             for block in layer:
                 feature = features.pop()
                 h = torch.concat([h, feature], axis=1)
