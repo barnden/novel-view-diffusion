@@ -67,7 +67,7 @@ class ResnetBlock(nn.Module):
         self.resample = (
             {
                 # Watson et al. (2022): nearest_neighbor_upsample()
-                "up": nn.Upsample(scale_factor=2, mode="nearest"),
+                "up": nn.Upsample(scale_factor=(1, 2, 2), mode="nearest"),
                 # Watson et al. (2022): avgpool_downsample()
                 "down": nn.AvgPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2)),
             }[resample]
@@ -286,6 +286,7 @@ class XUNet(nn.Module):
         block_dim = np.array(dimensions)
         for i, level in enumerate(ch_mult):
             blocks = []
+            resample = None
 
             use_attn = i in attn_layers
             features = ch * level
@@ -295,10 +296,10 @@ class XUNet(nn.Module):
                 blocks.append(XUNetBlock(features_in, features, emb_ch, use_attn, np.prod(block_dim), 4, dropout))
 
             if i != len(ch_mult) - 1:
-                blocks.append(ResnetBlock(features, features, emb_ch, dropout, resample="down"))
+                resample = ResnetBlock(features, features, emb_ch, dropout, resample="down")
                 block_dim //= 2
 
-            self.encoder.append(blocks)
+            self.encoder.append((blocks, resample))
 
         # Bottleneck (ch * ch_mult[-1], 8, 8)
         self.bottleneck = XUNetBlock(ch * ch_mult[-1], ch * ch_mult[-1], emb_ch, use_attn=True, attn_dim=np.prod(block_dim), dropout=dropout)
@@ -307,6 +308,7 @@ class XUNet(nn.Module):
         self.decoder = []
         for i, level in reversed(list(enumerate(ch_mult))):
             blocks = []
+            resample = None
 
             use_attn = i in attn_layers
             features = ch * level
@@ -315,11 +317,11 @@ class XUNet(nn.Module):
                 features_out = features if not i or j != num_res_blocks - 1 else ch * ch_mult[i - 1]
                 blocks.append(XUNetBlock(2 * features, features_out, emb_ch, use_attn, np.prod(block_dim), 4, dropout))
 
-            if i != len(ch_mult) - 1:
-                blocks.append(ResnetBlock(2 * features_out, features_out, emb_ch, dropout, resample="up"))
+            if i != 0:
+                resample = ResnetBlock(features_out, features_out, emb_ch, dropout, resample="up")
                 block_dim *= 2
 
-            self.decoder.append(blocks)
+            self.decoder.append((blocks, resample))
 
         # Output (ch, H, W) -> (C, H, W)
         self.conv2 = nn.Conv3d(ch, 3, kernel_size=(1, 3, 3), padding="same")
@@ -341,23 +343,42 @@ class XUNet(nn.Module):
         h = torch.stack([batch["x"], batch["z"]], axis=2)
         h = self.conv1(h)
 
-        features = [h]
-        for i, layer in enumerate(self.encoder):
+        hs = [h]
+        for i, (blocks, resample) in enumerate(self.encoder):
             emb = logsnr_emb[..., None, None, :] + pose_embs[i]
 
-            print(f"enc {i} h={h.shape} emb={emb.shape}")
-
-            for block in layer:
+            for block in blocks:
                 h = block(h, emb)
-                features.append(h)
+                hs.append(h)
+
+            if resample is not None:
+                h = resample(h, emb)
 
         emb = logsnr_emb[..., None, None, :] + pose_embs[-1]
+        h = self.bottleneck(h, emb)
 
-        for i, layer in enumerate(self.decoder):
+        for i, (blocks, resample) in enumerate(self.decoder):
             emb = logsnr_emb[..., None, None, :] + pose_embs[-(i + 1)]
-            for block in layer:
-                feature = features.pop()
-                h = torch.concat([h, feature], axis=1)
+
+            for block in blocks:
+                h = torch.concat([h, hs.pop()], axis=1)
                 h = block(h, emb)
 
+            if resample is not None:
+                h = resample(h, emb)
+
         return h
+
+model = XUNet((128, 128), 256, (1, 2, 2, 4), 1024, 3, (2, 3), 4, 0.1, True, True)
+
+B = 2
+data = {
+    "z": torch.randn((B, 3, 128, 128)),
+    "x": torch.randn((B, 3, 128, 128)),
+    "logsnr": torch.randn((B, 1)),
+    "t": torch.randn((B, 2, 3)),
+    "R": torch.randn((B, 2, 3, 3)),
+    "K": torch.randn((B, 3, 3))
+}
+
+model(data)
