@@ -370,4 +370,8 @@ class XUNet(nn.Module):
             if resample is not None:
                 h = resample(h, emb)
 
+        h = self.conv2(h)
+
+        h = h[:, :, 1].squeeze()
+
         return h
