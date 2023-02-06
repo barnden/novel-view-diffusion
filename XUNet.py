@@ -76,7 +76,8 @@ class ResnetBlock(nn.Module):
         )
 
         # From Watson et al.'s out_init_scale(), they use truncated normal with mean=0 and std=0
-        nn.init.trunc_normal_(self.conv2.weight, mean=0.0, std=1.0)
+        # nn.init.trunc_normal_(self.conv2.weight, mean=0.0, std=1.0)
+        nn.init.uniform_(self.conv2.weight, a=0.0, b=0.0)
 
     def forward(self, h_in, emb):
         C = h_in.shape[1]
@@ -116,7 +117,8 @@ class AttnBlock(nn.Module):
         self.attn2 = nn.MultiheadAttention(attn_dims, attn_heads)
 
         self.dense = nn.Linear(in_features=features, out_features=features)
-        nn.init.trunc_normal_(self.dense.weight, mean=0.0, std=1.0)
+        # nn.init.trunc_normal_(self.dense.weight, mean=0.0, std=1.0)
+        nn.init.uniform_(self.dense.weight, a=0.0, b=0.0)
 
     def forward(self, h_in):
         B, C, _, H, W = h_in.shape
@@ -325,7 +327,8 @@ class XUNet(nn.Module):
 
         # Output (ch, H, W) -> (C, H, W)
         self.conv2 = nn.Conv3d(ch, 3, kernel_size=(1, 3, 3), padding="same")
-        nn.init.trunc_normal_(self.conv2.weight, mean=0.0, std=1.0)
+        # nn.init.trunc_normal_(self.conv2.weight, mean=0.0, std=1.0)
+        nn.init.uniform_(self.conv2.weight, a=0.0, b=0.0)
 
     def forward(self, batch):
         # TODO: Classifier-free guidance
@@ -368,17 +371,3 @@ class XUNet(nn.Module):
                 h = resample(h, emb)
 
         return h
-
-model = XUNet((128, 128), 256, (1, 2, 2, 4), 1024, 3, (2, 3), 4, 0.1, True, True)
-
-B = 2
-data = {
-    "z": torch.randn((B, 3, 128, 128)),
-    "x": torch.randn((B, 3, 128, 128)),
-    "logsnr": torch.randn((B, 1)),
-    "t": torch.randn((B, 2, 3)),
-    "R": torch.randn((B, 2, 3, 3)),
-    "K": torch.randn((B, 3, 3))
-}
-
-model(data)
