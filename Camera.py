@@ -1,3 +1,7 @@
+'''
+Adaptation of Visu3d's pinhole camera to PyTorch for use in XUNet.
+'''
+
 import torch
 import torch.nn.functional as F
 
@@ -5,6 +9,7 @@ import torch.nn.functional as F
 class Camera:
     def __init__(self, H, W, K, R, t):
         self.padding = 6 - R.ndim
+        self.device = K.device
 
         self.H = H
         self.W = W
@@ -16,7 +21,10 @@ class Camera:
         self.Kinv = Kinv.reshape(Kinv.shape[:-2] + (1,) * self.padding + Kinv.shape[-2:])
 
     def centers(self):
-        h, w = torch.meshgrid(torch.arange(self.H), torch.arange(self.W), indexing="xy")
+        h, w = torch.meshgrid(
+            torch.arange(self.H, device=self.device),
+            torch.arange(self.W, device=self.device),
+            indexing="xy")
 
         points = torch.stack([h, w], axis=-1)
         points = torch.asarray(points) + 0.5

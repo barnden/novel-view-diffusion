@@ -65,12 +65,12 @@ class ResnetBlock(nn.Module):
         self.features = dim_out
 
         self.resample = (
-            {
+            nn.ModuleDict({
                 # Watson et al. (2022): nearest_neighbor_upsample()
                 "up": nn.Upsample(scale_factor=(1, 2, 2), mode="nearest"),
                 # Watson et al. (2022): avgpool_downsample()
                 "down": nn.AvgPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2)),
-            }[resample]
+            })[resample]
             if resample is not None
             else nn.Identity()
         )
@@ -188,7 +188,7 @@ class ConditioningProcessor(nn.Module):
             nn.Linear(emb_ch, emb_ch), nn.SiLU(), nn.Linear(emb_ch, emb_ch)
         )
 
-        self.convs = [
+        self.convs = nn.ModuleList([
             nn.Conv3d(
                 in_channels=magic,
                 out_channels=emb_ch,
@@ -197,7 +197,7 @@ class ConditioningProcessor(nn.Module):
                 padding=(0, 1, 1),
             )
             for i in range(num_resolutions + 1)
-        ]
+        ])
 
         # fmt: off
         # Learnable positional embeddings
@@ -301,7 +301,9 @@ class XUNet(nn.Module):
                 resample = ResnetBlock(features, features, emb_ch, dropout, resample="down")
                 block_dim //= 2
 
-            self.encoder.append((blocks, resample))
+            self.encoder.append(nn.ModuleList((nn.ModuleList(blocks), resample)))
+
+        self.encoder = nn.ModuleList(self.encoder)
 
         # Bottleneck (ch * ch_mult[-1], 8, 8)
         features = ch * ch_mult[-1]
@@ -328,7 +330,9 @@ class XUNet(nn.Module):
                 resample = ResnetBlock(features_out, features_out, emb_ch, dropout, resample="up")
                 block_dim *= 2
 
-            self.decoder.append((blocks, resample))
+            self.decoder.append(nn.ModuleList((nn.ModuleList(blocks), resample)))
+
+        self.decoder = nn.ModuleList(self.decoder)
 
         # Output (ch, H, W) -> (C, H, W)
         self.conv2 = nn.Conv3d(ch, 3, kernel_size=(1, 3, 3), padding="same")
