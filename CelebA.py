@@ -117,7 +117,7 @@ if __name__ == "__main__":
     model = XUNet(resolution, ch_mult=(1, 2, 4))
     model.to("cuda")
 
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = optim.Adam(model.parameters(), lr=1e-4, betas=(0.9, 0.99))
 
     if os.path.exists("celeba.pth"):
         model.load_state_dict(torch.load("celeba.pth"))
