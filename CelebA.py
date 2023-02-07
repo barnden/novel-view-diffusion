@@ -99,7 +99,7 @@ def synthesize_and_save_images(model, x):
     mu = torch.sqrt(sigmoid(logsnr))[..., None, None]
     sigma = torch.sqrt(sigmoid(-logsnr))[..., None, None]
 
-    recovered = mu * z + sigma * E
+    recovered = 1 / mu * (z - sigma * E)
 
     # Normalize [-1, 1] -> [0, 1]
     recovered = (recovered + 1) / 2
