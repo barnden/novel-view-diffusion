@@ -128,6 +128,7 @@ if __name__ == "__main__":
 
         for batch_idx, batch in enumerate(loader):
             optimizer.zero_grad()
+            N = batch['x'].shape[0]
 
             # Everything to CUDA!
             # - there's probably a better way to do this
@@ -138,7 +139,7 @@ if __name__ == "__main__":
             batch["K"] = batch["K"].to("cuda")
 
             # Step ~ Unif{0, 255}, normalised to [0, 1]
-            step = torch.randint(0, 256, size=(B, 1), dtype=torch.float32, device="cuda") / 256
+            step = torch.randint(0, 256, size=(N, 1), dtype=torch.float32, device="cuda") / 256
 
             # Compute lambda
             logsnr = logsnr_schedule_cosine(step)
