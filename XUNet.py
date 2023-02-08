@@ -77,7 +77,7 @@ class ResnetBlock(nn.Module):
 
         # From Watson et al.'s out_init_scale(), they use truncated normal with mean=0 and std=0
         # nn.init.trunc_normal_(self.conv2.weight, mean=0.0, std=1.0)
-        nn.init.uniform_(self.conv2.weight, a=0.0, b=0.0)
+        # nn.init.uniform_(self.conv2.weight, a=0.0, b=0.0)
 
     def forward(self, h_in, emb):
         C = h_in.shape[1]
@@ -118,7 +118,7 @@ class AttnBlock(nn.Module):
 
         self.dense = nn.Linear(in_features=features, out_features=features)
         # nn.init.trunc_normal_(self.dense.weight, mean=0.0, std=1.0)
-        nn.init.uniform_(self.dense.weight, a=0.0, b=0.0)
+        # nn.init.uniform_(self.dense.weight, a=0.0, b=0.0)
 
     def forward(self, h_in):
         B, C, _, H, W = h_in.shape
@@ -337,7 +337,7 @@ class XUNet(nn.Module):
         # Output (ch, H, W) -> (C, H, W)
         self.conv2 = nn.Conv3d(ch, 3, kernel_size=(1, 3, 3), padding="same")
         # nn.init.trunc_normal_(self.conv2.weight, mean=0.0, std=1.0)
-        nn.init.uniform_(self.conv2.weight, a=0.0, b=0.0)
+        # nn.init.uniform_(self.conv2.weight, a=0.0, b=0.0)
 
     def forward(self, batch):
         # TODO: Classifier-free guidance
