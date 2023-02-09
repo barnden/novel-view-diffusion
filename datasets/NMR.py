@@ -73,7 +73,7 @@ class NMR(Dataset):
             # Assumption is that transform composition does ToTensor()
             X = [self.transform(x) for x in X]
         else:
-            X = [transforms.ToTensor(x) for x in X]
+            X = [transforms.ToTensor()(x) for x in X]
 
         X = torch.stack(X, dim=0)
 
