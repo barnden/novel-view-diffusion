@@ -6,10 +6,11 @@ import os
 import math
 
 import torch
-from torchvision import transforms
-from torch.utils.data import DataLoader
-from torchvision.utils import save_image
+import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from torchvision import transforms
+from torchvision.utils import save_image
 
 from datasets.NMR import NMR
 from XUNet import XUNet
@@ -108,13 +109,15 @@ def synthesize_images(model, loader):
 
 if __name__ == "__main__":
     resolution = (64, 64)
+    batch_size = 4
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model = XUNet(resolution)
+    model = nn.DataParallel(model)
     model.to(device)
 
-    data_train = create_dataloader(split="train", batch_size=1, resolution=resolution)
-    data_validate = create_dataloader(split="val", batch_size=1, resolution=resolution)
+    data_train = create_dataloader(split="train", batch_size=batch_size, resolution=resolution)
+    data_validate = create_dataloader(split="val", batch_size=batch_size, resolution=resolution)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, betas=(0.9, 0.99))
 
