@@ -13,6 +13,13 @@ from Camera import *
 from Embeddings import *
 
 
+def logsnr_schedule_cosine(t, *, logsnr_min=-20.0, logsnr_max=20.0):
+    b = math.atan(math.exp(-0.5 * logsnr_max))
+    a = math.atan(math.exp(-0.5 * logsnr_min)) - b
+
+    return -2.0 * torch.log(torch.tan(a * t + b))
+
+
 class GroupNorm(nn.Module):
     # GroupNorm over frames
     def __init__(self, num_channels, num_groups=32):

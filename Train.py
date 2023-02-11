@@ -13,14 +13,7 @@ from torchvision import transforms
 from torchvision.utils import save_image
 
 from datasets.NMR import NMR
-from XUNet import XUNet
-
-
-def logsnr_schedule_cosine(t, *, logsnr_min=-20.0, logsnr_max=20.0):
-    b = math.atan(math.exp(-0.5 * logsnr_max))
-    a = math.atan(math.exp(-0.5 * logsnr_min)) - b
-
-    return -2.0 * torch.log(torch.tan(a * t + b))
+from XUNet import XUNet, logsnr_schedule_cosine
 
 
 def create_dataloader(split="train", batch_size=8, resolution=(128, 128), workers=24):
@@ -32,7 +25,7 @@ def create_dataloader(split="train", batch_size=8, resolution=(128, 128), worker
         ]
     )
 
-    dataset = NMR("./data", category="chair", split=split, transform=transform)
+    dataset = NMR("./data", category="vessel", split=split, transform=transform)
 
     loader = DataLoader(
         dataset, batch_size=batch_size, num_workers=workers, pin_memory=True
@@ -42,18 +35,18 @@ def create_dataloader(split="train", batch_size=8, resolution=(128, 128), worker
 
 
 @torch.no_grad()
-def create_batch(data):
+def create_batch(data, shuffle=True):
     # Each batch contains 24 synthesized views.
     # Our 'batch' then becomes (batch_size * 12).
     X, K, R, t = data
     V = X.shape[1]
 
-    # Shuffle views
-    perm = torch.randperm(V)
-    X = X[:, perm]
-    K = K[:, perm]
-    R = R[:, perm]
-    t = t[:, perm]
+    if shuffle:
+        perm = torch.randperm(V)
+        X = X[:, perm]
+        K = K[:, perm]
+        R = R[:, perm]
+        t = t[:, perm]
 
     # Split data into conditioning set (x) and noised set (z)
     batch = {
@@ -90,7 +83,7 @@ def create_noise(logsnr, x):
 @torch.no_grad()
 def synthesize_images(model, loader):
     # FIXME: Validate against more than just one batch
-    batch = create_batch(next(iter(loader)))
+    batch = create_batch(next(iter(loader)), shuffle=False)
     E_actual, mu, sigma = create_noise(batch["logsnr"], batch["z"])
 
     batch["z"] = (mu * batch["z"]) + (sigma * E_actual)
@@ -109,7 +102,7 @@ def synthesize_images(model, loader):
 
 if __name__ == "__main__":
     resolution = (64, 64)
-    batch_size = 4
+    batch_size = 1
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model = XUNet(resolution)
@@ -147,18 +140,19 @@ if __name__ == "__main__":
             optimizer.step()
 
             if idx % 100 == 0:
+                validation_loss, images = synthesize_images(model, data_validate)
+                save_image(images, f"./images/validation_{epoch}_{idx}.png")
+
                 # FIXME: Plot losses in addition to logging
                 print()
                 print(f"Epoch {epoch} Batch {idx}")
                 print(f"\ttrain={loss}")
                 print(f"\tvalid={validation_loss}")
                 print()
-                validation_loss, images = synthesize_images(model, data_validate)
-                save_image(images, f"./images/validation_{epoch}_{idx}.png")
 
                 if idx > 0:
                     state = model.state_dict()
                     torch.save(state, f"NMR.pth")
 
                     if idx % 500 == 0:
-                        torch.save(state, f"NMR_{epoch}_{idx}")
+                        torch.save(state, f"NMR_{epoch}_{idx}.pth")
