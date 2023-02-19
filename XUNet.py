@@ -186,7 +186,8 @@ class ConditioningProcessor(nn.Module):
     ):
         super().__init__()
 
-        magic = 16 * 9 # (15 - 0 + 1) (8 - 0 + 1) -> 16 * 9 (last dimension of pose_emb)
+        # See "Pose information" from Scene Representation Transformer Sajjadi et al. 2022 for magic number
+        magic = 6 * 15 + 6 * 9
         magic_root = math.sqrt(magic)
 
         self.emb_ch = emb_ch
@@ -211,16 +212,16 @@ class ConditioningProcessor(nn.Module):
         self.use_pos_emb = use_pos_emb
         if use_pos_emb:
             self.pos_emb = torch.nn.Parameter(torch.empty(H, W, magic).normal_(std=1 / magic_root)[None, None])
-            self.pos_emb.requires_grad = True
+            self.pos_emb.requires_grad_(True)
 
         # Binary embedding to allow the model to distinguish frames
         self.use_ref_pose_emb = use_ref_pose_emb
         if use_ref_pose_emb:
             self.first_emb = torch.nn.Parameter(torch.empty(magic,).normal_(std=1 / magic_root)[None, None, None, None])
-            self.first_emb.requires_grad = True
+            self.first_emb.requires_grad_(True)
 
             self.other_emb = torch.nn.Parameter(torch.empty(magic,).normal_(std=1 / magic_root)[None, None, None, None])
-            self.other_emb.requires_grad = True
+            self.other_emb.requires_grad_(True)
         # fmt: on
 
 
