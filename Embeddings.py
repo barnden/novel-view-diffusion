@@ -2,6 +2,7 @@ import math
 import torch
 
 # Functions taken from Watson et al. (2022), modified for PyTorch
+# See also Scene Representation Transformer Sajjadi et al. 2022
 def posenc_nerf(x, min_deg=0, max_deg=15):
     if min_deg == max_deg:
         return x

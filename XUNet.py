@@ -13,9 +13,15 @@ from Camera import *
 from Embeddings import *
 
 
-def logsnr_schedule_cosine(t, *, logsnr_min=-20.0, logsnr_max=20.0):
+def get_schedule_constants(t, *, logsnr_min=-20.0, logsnr_max=20.0):
     b = math.atan(math.exp(-0.5 * logsnr_max))
     a = math.atan(math.exp(-0.5 * logsnr_min)) - b
+
+    return (a, b)
+
+
+def logsnr_schedule_cosine(t, *, logsnr_min=-20.0, logsnr_max=20.0):
+    a, b = get_schedule_constants(t, logsnr_min=logsnr_min, logsnr_max=logsnr_max)
 
     return -2.0 * torch.log(torch.tan(a * t + b))
 
