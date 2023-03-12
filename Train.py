@@ -49,19 +49,24 @@ def create_batch(data, shuffle=True):
         t = t[:, perm]
 
     # Split data into conditioning set (x) and noised set (z)
+    split = V // 2
+
+    # Assert that intrinsic of conditioning and noisy views are the same
+    assert(torch.equal(K[:, : split], K[:, split :]))
+
     batch = {
-        "x": X[:, : V // 2],
-        "z": X[:, V // 2 :],
-        "K": torch.stack([K[:, : V // 2], K[:, V // 2 :]], dim=2),
-        "R": torch.stack([K[:, : V // 2], K[:, V // 2 :]], dim=2),
-        "t": torch.stack([t[:, : V // 2], t[:, V // 2 :]], dim=2),
+        "x": X[:, : split],
+        "z": X[:, split :],
+        "K": K[:, : split],
+        "R": torch.stack([R[:, : split], R[:, split :]], dim=2),
+        "t": torch.stack([t[:, : split], t[:, split :]], dim=2),
     }
 
     batch = {k: v.flatten(0, 1).to(device) for (k, v) in batch.items()}
 
     # fmt: off
     # Generate noise levels
-    step = (torch.randint(0, 256, size=(V // 2, 1), dtype=torch.float32, device=device) / 256)
+    step = (torch.randint(0, 256, size=(split, 1), dtype=torch.float32, device=device) / 256)
 
     logsnr = logsnr_schedule_cosine(step)
     batch["logsnr"] = logsnr
@@ -101,7 +106,7 @@ def synthesize_images(model, loader):
 
 
 if __name__ == "__main__":
-    resolution = (64, 64)
+    resolution = (32, 32)
     batch_size = 1
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
