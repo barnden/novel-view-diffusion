@@ -66,7 +66,7 @@ def create_batch(data, shuffle=True):
 
     # fmt: off
     # Generate noise levels
-    step = (torch.randint(0, 256, size=(split, 1), dtype=torch.float32, device=device) / 256)
+    step = (torch.randint(0, 256, size=(X.shape[0] * split, 1), dtype=torch.float32, device=device) / 256)
 
     logsnr = logsnr_schedule_cosine(step)
     batch["logsnr"] = logsnr
