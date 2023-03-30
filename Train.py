@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from torchvision.utils import save_image
 
-from datasets.NMR import NMR
+from datasets.ShapeNet import ShapeNet
 from XUNet import XUNet, logsnr_schedule_cosine
 
 
@@ -25,7 +25,7 @@ def create_dataloader(split="train", batch_size=8, resolution=(128, 128), worker
         ]
     )
 
-    dataset = NMR("./data", category="vessel", split=split, transform=transform)
+    dataset = ShapeNet("./data", split=split, transform=transform)
 
     loader = DataLoader(
         dataset, batch_size=batch_size, num_workers=workers, pin_memory=True
@@ -106,7 +106,7 @@ def synthesize_images(model, loader):
 
 
 if __name__ == "__main__":
-    resolution = (32, 32)
+    resolution = (128, 128)
     batch_size = 1
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -119,10 +119,10 @@ if __name__ == "__main__":
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, betas=(0.9, 0.99))
 
-    if os.path.exists("NMR.pth"):
-        model.load_state_dict(torch.load("NMR.pth"))
+    if os.path.exists("ShapeNet.pth"):
+        model.load_state_dict(torch.load("ShapeNet.pth"))
 
-    for epoch in range(10):
+    for epoch in range(500):
         print("Epoch", epoch)
 
         for idx, data in enumerate(data_train):
